@@ -562,8 +562,11 @@ def run_backtest(df, args):
 def main():
     ap = argparse.ArgumentParser(description="Markov 2.0 - Hedge Fund Method (corrected)")
     ap.add_argument("--csv", required=True, help="CSV with date,open,high,low,close,volume")
-    ap.add_argument("--states", choices=["price", "enhanced"], default="price")
-    ap.add_argument("--mode", choices=["filter", "standalone"], default="filter")
+    # Defaults set to this install's onboarding choice (standalone + enhanced).
+    # The method's conceptual defaults are filter + price; both modes/states are
+    # fully supported via these flags.
+    ap.add_argument("--states", choices=["price", "enhanced"], default="enhanced")
+    ap.add_argument("--mode", choices=["filter", "standalone"], default="standalone")
     ap.add_argument("--window", type=int, default=20)
     ap.add_argument("--bull", type=float, default=0.05)
     ap.add_argument("--bear", type=float, default=-0.05)

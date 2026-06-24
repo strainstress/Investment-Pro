@@ -65,9 +65,16 @@ When chosen, report how the matrix and signal change vs price-only.
 The engine is `scripts/markov2.py` (numpy, pandas, matplotlib; scikit-learn for
 enhanced states; hmmlearn for HMM mode).
 
+> **This install's defaults:** STANDALONE mode + enhanced states (set during
+> onboarding). The method's conceptual defaults are FILTER + price-only; pass
+> `--mode filter --states price` for those. Both are fully supported.
+
 ```bash
-# Filter mode, price-only states, full report:
+# This install's defaults (standalone + enhanced), full report:
 python scripts/markov2.py --csv PRICES.csv
+
+# Method's conceptual defaults (filter mode, price-only states):
+python scripts/markov2.py --csv PRICES.csv --mode filter --states price
 
 # Standalone, enhanced states, HMM cross-check, walk-forward backtest + plot:
 python scripts/markov2.py --csv PRICES.csv --states enhanced --mode standalone \
