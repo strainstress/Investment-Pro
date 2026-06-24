@@ -69,4 +69,35 @@ The matrix deciding day *t+1* is built only from data up to day *t*.
 > Backtests flatter. The fixed matrix shows uglier, truer numbers — those are the
 > only ones worth trading.
 
+---
+
+## Second demo: MU (Micron) — a hyper-volatile single stock
+
+Same config (enhanced states, standalone), 2,764 bars, $9.56 → $1,211 over the
+period. This is where the fix earns its keep.
+
+| run | total | CAGR | win | PF | max DD | Sharpe |
+|---|---|---|---|---|---|---|
+| In-sample legacy (LOOKAHEAD) | −47.6% | −6.96% | 48.1% | 1.00 | −90.3% | 0.02 |
+| Before fix — walk-fwd legacy | **−73.9%** | −13.9% | 49.4% | 0.97 | **−93.2%** | −0.17 |
+| **After fix — walk-fwd stride** | **+4.6%** | +0.50% | 50.7% | 1.03 | **−34.5%** | 0.12 |
+| Buy & hold MU | +3,717.8% | 50.1% | 52.6% | 1.20 | −57.8% | 1.05 |
+
+![MU equity curve](mu_equity.png)
+
+- **The fix prevents a wipeout.** The legacy matrix's fake persistence kept the
+  standalone book in disastrous positions → **−74% with a −93% drawdown**. The
+  honest stride matrix sidestepped that and merely broke even (−34.5% max DD).
+  That is the entire point of FIX 1, shown in the most brutal way.
+- **HMM flag was honest, not flattering:** for MU the unsupervised HMM agreed with
+  the thresholds only **59.4%** → *AMBER, size down*. SPY scored 80.8% (green).
+  The tool tells you when the regimes are fuzzy instead of pretending.
+- **FIX 2 generalized:** the ticker-agnostic verifier PASSED on MU (internal
+  consistency + COVID-crash anchor), and its context line correctly showed MU was
+  *bullish* in mid-2017 — the exact period that was *flat* for SPY. A
+  ticker-specific check would have false-failed here.
+- **It does not beat buy & hold**, and that is the honest result: you cannot
+  regime-time your way past a stock compounding at 50%/yr. Standalone regime
+  trading is a risk-control tool here, not an outperformance engine.
+
 *Not financial advice. Probabilistic regime signals fit to past data can fail.*

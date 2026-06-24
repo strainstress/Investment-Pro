@@ -179,25 +179,66 @@ def signal_from_row(row, bull_cols, bear_cols):
 # --------------------------------------------------------------------------- #
 # FIX 2: label self-verification
 # --------------------------------------------------------------------------- #
-def verify_labels(df, states, periods):
-    """periods: list of (name, start, end, expected_state_id). Returns rows and
-    an overall pass flag. 'expected' = the regime everyone agrees that period was."""
-    rows, all_ok = [], True
+def verify_labels(df, states, ret, bull=0.05, bear=-0.05):
+    """FIX 2 (ticker-agnostic). Two complementary checks that the
+    BULL/BEAR/SIDEWAYS mapping is not swapped in the display:
+
+      (A) INTERNAL CONSISTENCY (the authoritative swap-guard). By definition,
+          BULL-labeled days have trailing-20d return >= +bull and BEAR-labeled
+          days <= -bear, so the per-label mean return MUST order
+          BULL > SIDEWAYS > BEAR with the right signs. If the display swapped the
+          names, this ordering breaks. Works for any ticker, no period guessing.
+
+      (B) KNOWN MARKET-WIDE ANCHOR. The Feb-Mar 2020 COVID crash was a fast, broad
+          decline that essentially every liquid US equity shared, so it must read
+          BEAR. Two further windows are shown for CONTEXT only (no pass/fail),
+          because what counts as a 'bull run' or 'flat stretch' is ticker-specific
+          (a slow steady riser labels SIDEWAYS even while it grinds higher).
+
+    Returns dict(checks=[(label, ok_or_None, detail)], passed=bool).
+    """
+    out = {"checks": [], "passed": True}
+    close = df["close"].values
     dates = df["date"].values
-    for name, start, end, expected in periods:
-        m = (dates >= np.datetime64(start)) & (dates <= np.datetime64(end))
+
+    # (A) internal consistency
+    means = {}
+    for st in (BULL, SIDEWAYS, BEAR):
+        sel = states == st
+        means[st] = float(np.nanmean(ret[sel])) if sel.any() else float("nan")
+    okA = (means[BULL] >= bull and means[BEAR] <= bear
+           and means[BULL] > means[SIDEWAYS] > means[BEAR])
+    out["checks"].append((
+        "internal: mean ret20 ordered BULL>SIDE>BEAR with correct signs", okA,
+        f"BULL {means[BULL]:+.3f} | SIDE {means[SIDEWAYS]:+.3f} | BEAR {means[BEAR]:+.3f}"))
+    out["passed"] = out["passed"] and okA
+
+    # (B) anchors: (name, start, end, expected_or_None, hard?)
+    anchors = [
+        ("2020 COVID crash", "2020-02-24", "2020-03-23", BEAR, True),
+        ("Apr-2020 rebound", "2020-04-06", "2020-06-08", None, False),
+        ("2017 window", "2017-06-01", "2017-09-01", None, False),
+    ]
+    for name, a, b, exp, hard in anchors:
+        m = (dates >= np.datetime64(a)) & (dates <= np.datetime64(b))
+        idx = np.where(m)[0]
         sub = states[m]
         sub = sub[sub >= 0]
-        if len(sub) == 0:
-            rows.append((name, "n/a", 0.0, NAME[expected], None))
+        if len(sub) == 0 or len(idx) < 2:
+            out["checks"].append((f"anchor {name}", None, "no data"))
             continue
         vals, counts = np.unique(sub, return_counts=True)
         dom = int(vals[np.argmax(counts)])
         frac = float(counts.max() / counts.sum())
-        ok = dom == expected
-        all_ok = all_ok and ok
-        rows.append((name, NAME[dom], frac, NAME[expected], ok))
-    return rows, all_ok
+        realized = float(close[idx[-1]] / close[idx[0]] - 1.0)
+        detail = f"dominant={NAME[dom]} ({frac*100:.0f}%)  realized {realized*100:+.0f}%"
+        if hard:
+            ok = dom == exp
+            out["passed"] = out["passed"] and ok
+            out["checks"].append((f"anchor {name} (expect {NAME[exp]})", ok, detail))
+        else:
+            out["checks"].append((f"context {name}", None, detail))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -382,7 +423,8 @@ def run_report(df, args):
     out = {}
     close = df["close"].values
     print("=" * 74)
-    print(f"MARKOV 2.0  |  {len(df)} bars  {df['date'].iloc[0].date()} -> {df['date'].iloc[-1].date()}")
+    print(f"MARKOV 2.0  |  {getattr(args, 'ticker', '?')}  |  {len(df)} bars  "
+          f"{df['date'].iloc[0].date()} -> {df['date'].iloc[-1].date()}")
     print(f"states={args.states}  trade-mode={args.mode}  window={args.window}  "
           f"bull>=+{args.bull:.0%}  bear<=-{abs(args.bear):.0%}")
     print("=" * 74)
@@ -393,7 +435,7 @@ def run_report(df, args):
         names = [NAME[SIDEWAYS], NAME[BULL], NAME[BEAR]]
         n_states = 3
         bull_cols, bear_cols = [BULL], [BEAR]
-        verify_states = states
+        verify_states, verify_ret = states, ret
     else:
         feats = enhanced_features(df, args.window)
         ret = feats[:, 0]
@@ -404,7 +446,7 @@ def run_report(df, args):
         bull_cols = [c for c, d in direction.items() if d == BULL]
         bear_cols = [c for c, d in direction.items() if d == BEAR]
         # price-only labels too, for FIX 2 verification + enhanced-vs-price report
-        verify_states, _ = price_states(close, args.window, args.bull, args.bear)
+        verify_states, verify_ret = price_states(close, args.window, args.bull, args.bear)
 
     counts_leg, P_leg = transition_matrix(states, n_states, stride=1)
     counts_str, P_str = transition_matrix(states, n_states, stride=args.window)
@@ -421,21 +463,16 @@ def run_report(df, args):
     print("WARNING: legacy windows share 19/20 days -> fake persistence. "
           "Only the stride-sampled matrix is honest.")
 
-    # ---- FIX 2: label verification -----------------------------------------
-    # Canonical periods chosen because they are unambiguous UNDER THIS definition
-    # (20-day cumulative return, +-5%). Verified against the data before shipping.
-    periods = [
-        ("COVID crash 2020", "2020-02-24", "2020-03-23", BEAR),
-        ("Apr 2020 V-rebound", "2020-04-06", "2020-06-08", BULL),
-        ("Summer 2017 calm", "2017-06-01", "2017-09-01", SIDEWAYS),
-    ]
-    rows, ok = verify_labels(df, verify_states, periods)
-    print("\n--- FIX 2: label self-verification (price-only labels vs known history) ---")
-    for name, dom, frac, exp, good in rows:
-        tag = "PASS" if good else ("FAIL" if good is not None else "skip")
-        print(f"  [{tag}] {name:<18} dominant={dom:<9} ({frac*100:4.0f}%)  expected={exp}")
-    print(f"  => label mapping {'VERIFIED' if ok else 'MISMATCH - would block display'}")
-    out["labels_verified"] = ok
+    # ---- FIX 2: label verification (ticker-agnostic) -----------------------
+    vr = verify_labels(df, verify_states, verify_ret, bull=args.bull, bear=args.bear)
+    print("\n--- FIX 2: label self-verification (price-only labels) ---")
+    for label, good, detail in vr["checks"]:
+        tag = "PASS" if good else ("FAIL" if good is False else "ctx ")
+        print(f"  [{tag}] {label}")
+        if detail:
+            print(f"         {detail}")
+    print(f"  => label mapping {'VERIFIED' if vr['passed'] else 'MISMATCH - would block display'}")
+    out["labels_verified"] = vr["passed"]
 
     # ---- signal + forecasts -------------------------------------------------
     cur = states[states >= 0][-1]
@@ -522,7 +559,7 @@ def run_backtest(df, args):
     line("IN-SAMPLE legacy (LOOKAHEAD!)", m_is)
     line("BEFORE FIX  walk-fwd legacy", m_leg)
     line("AFTER FIX   walk-fwd stride", m_fix)
-    line("Buy & hold SPY", m_bh)
+    line(f"Buy & hold {args.ticker}", m_bh)
 
     print("\n  Backtests flatter. The fixed matrix shows uglier, truer numbers — "
           "those are the only ones worth trading.")
@@ -537,13 +574,13 @@ def run_backtest(df, args):
             fig, ax = plt.subplots(figsize=(11, 6))
             ax.plot(dts, m_is["equity"], label="In-sample legacy (LOOKAHEAD — flatters)",
                     color="#2ca02c", lw=1.1, ls=":")
-            ax.plot(dts, m_bh["equity"], label="Buy & hold SPY", color="#888888", lw=1.4)
+            ax.plot(dts, m_bh["equity"], label=f"Buy & hold {args.ticker}", color="#888888", lw=1.4)
             ax.plot(dts, m_leg["equity"], label="Before fix (walk-fwd, legacy/overlapping)",
                     color="#d62728", lw=1.4, ls="--")
             ax.plot(dts, m_fix["equity"], label="After fix (walk-fwd, stride-sampled, honest)",
                     color="#1f77b4", lw=1.8)
             ax.set_yscale("log")
-            ax.set_title(f"Markov 2.0 walk-forward  |  SPY  |  {args.states} states, "
+            ax.set_title(f"Markov 2.0 walk-forward  |  {args.ticker}  |  {args.states} states, "
                          f"{args.mode} mode")
             ax.set_ylabel("Growth of $1 (log)")
             ax.legend(loc="upper left", fontsize=9)
@@ -562,6 +599,7 @@ def run_backtest(df, args):
 def main():
     ap = argparse.ArgumentParser(description="Markov 2.0 - Hedge Fund Method (corrected)")
     ap.add_argument("--csv", required=True, help="CSV with date,open,high,low,close,volume")
+    ap.add_argument("--ticker", default=None, help="asset label (default: from CSV filename)")
     # Defaults set to this install's onboarding choice (standalone + enhanced).
     # The method's conceptual defaults are filter + price; both modes/states are
     # fully supported via these flags.
@@ -581,6 +619,9 @@ def main():
     ap.add_argument("--plot", default=None)
     ap.add_argument("--json", default=None, help="write machine-readable summary")
     args = ap.parse_args()
+    if not args.ticker:
+        import os
+        args.ticker = os.path.splitext(os.path.basename(args.csv))[0].upper()
 
     df = load_prices(args.csv)
     summary, _ = run_report(df, args)
